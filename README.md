@@ -36,7 +36,7 @@ _Screenshots were captured from the current desktop `main` build. Demonstration 
 
 ## Feature Overview
 
-> **⚠️ Douyin's anti-bot gate blocks the CLI from downloading likes / favorites / favorite collections (since 2026-08) and single videos / notes, collections and music (since 2026-09); profile posts can only rely on the browser fallback.** See [Current Limitations](#current-limitations) for the cause and what still works; use the Douzy desktop app for these downloads.
+> **⚠️ Douyin now gates most download APIs behind its in-page security SDK.** Install Playwright and leave `browser_fallback.enabled` on so the CLI can send those requests from a real Douyin page. See [Current Limitations](#current-limitations).
 
 ### Supported
 
@@ -79,15 +79,13 @@ _Screenshots were captured from the current desktop `main` build. Demonstration 
   - since 2026-09-14: `aweme/detail` (single video / note), `aweme/post` (profile posts), `mix/detail`, `mix/list`,
     `music/detail`, `music/aweme`, `music/list`
 
-  The required `x-secsdk-web-signature` can only be produced by the SDK inside a real Douyin web page, which the CLI's
-  direct API requests cannot carry, so single videos / notes, collections, music and likes / favorites **cannot be
-  downloaded** in the CLI. Profile-post (`post`) API paging is rejected as well; with `playwright` installed and
-  `browser_fallback` left on (headed by default), the browser fallback reads the page's own post-list requests and may
-  still work, but it has not been tested against this gate. The Douzy desktop app sends these requests through its
-  built-in login window and is not affected.
+  The required `x-secsdk-web-signature` can only be produced by the SDK inside a real Douyin page. With `playwright`
+  installed and `browser_fallback.enabled: true` (the default), the CLI can open a real item page and read the detail
+  response or SSR data produced by that page. If Playwright is unavailable or browser fallback is disabled, those
+  downloads remain unavailable. Other gated pagination paths still need browser-native implementations.
   Endpoints still reachable directly as of 2026-09-14: user profile, following list, comments, live rooms (webcast),
   hot board and search.
-- Browser fallback is fully validated for `post`; `like/mix/music` currently relies on API pagination
+- The Playwright page bridge currently covers public single-item detail; gated collection/likes pagination remains limited
 - `number.allmix` / `increase.allmix` are retained as compatibility aliases and normalized to `mix`
 - `collect` / `collectmix` currently work for the account represented by the logged-in cookies only
 - `collect` / `collectmix` must be used alone and cannot be combined with `post` / `like` / `mix` / `music`

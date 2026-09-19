@@ -2,12 +2,15 @@ import argparse
 import asyncio
 import json
 import logging
+import re
 import sys
+from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Any
 
 from auth import CookieManager
 from cli.login_flow import can_interactive_login, interactive_relogin
+from cli.page_bridge import PlaywrightPageBridge
 from cli.progress_display import ProgressDisplay
 from config import ConfigLoader
 from control import QueueManager, RateLimiter, RetryHandler
@@ -26,6 +29,11 @@ from utils.validators import is_short_url, normalize_short_url
 logger = setup_logger("CLI")
 display = ProgressDisplay()
 
+_SHORT_URL_RE = re.compile(
+    r"https?://(?:v\.douyin\.com|v\.iesdouyin\.com)/[A-Za-z0-9_-]+/?",
+    re.IGNORECASE,
+)
+
 
 def _as_bool(value: Any, default: bool = True) -> bool:
     if value is None:
@@ -35,6 +43,12 @@ def _as_bool(value: Any, default: bool = True) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "on"}
     return bool(value)
+
+
+def _read_list_file(path: str):
+    """Extract short links in file order, ignoring surrounding share text."""
+    text = Path(path).read_text(encoding="utf-8")
+    return list(dict.fromkeys(_SHORT_URL_RE.findall(text)))
 
 
 async def _run_with_relogin(make_coro, cookie_manager, *, serve=False):
@@ -90,9 +104,20 @@ async def download_url(
 
     original_url = url
 
-    async with DouyinAPIClient(
+    browser_config = config.get("browser_fallback", {}) or {}
+    page_bridge = None
+    if _as_bool(browser_config.get("enabled", True), default=True):
+        page_bridge = PlaywrightPageBridge(
+            cookie_manager.get_cookies(),
+            proxy=config.get("proxy"),
+            headless=_as_bool(browser_config.get("headless", False), default=False),
+            timeout_seconds=int(browser_config.get("wait_timeout_seconds", 60) or 60),
+        )
+
+    async with page_bridge or AsyncExitStack(), DouyinAPIClient(
         cookie_manager.get_cookies(),
         proxy=config.get("proxy"),
+        page_bridge=page_bridge,
     ) as api_client:
         if progress_reporter:
             progress_reporter.advance_step("解析链接", "检查短链并解析 URL")
@@ -244,6 +269,20 @@ async def main_async(args):
         for url in urls:
             if url not in config.get("link", []):
                 config.update(link=config.get("link", []) + [url])
+
+    if args.list_file:
+        try:
+            urls = await asyncio.get_running_loop().run_in_executor(
+                None, _read_list_file, args.list_file
+            )
+        except OSError as exc:
+            display.print_error(f"无法读取链接列表 {args.list_file}: {exc}")
+            return
+        if not urls:
+            display.print_error(f"链接列表中没有找到抖音短链: {args.list_file}")
+            return
+        links = config.get("link", [])
+        config.update(link=links + [url for url in urls if url not in links])
 
     if args.thread:
         config.update(thread=args.thread)
@@ -403,6 +442,11 @@ async def _dispatch_notifications(config: ConfigLoader, total_result: Any, url_c
 def main():
     parser = argparse.ArgumentParser(description="Douyin Downloader - 抖音批量下载工具")
     parser.add_argument("-u", "--url", action="append", help="Download URL(s)")
+    parser.add_argument(
+        "--list-file",
+        "--list_file",
+        help="Extract Douyin short URLs from a UTF-8 text file and download in order",
+    )
     parser.add_argument("-c", "--config", help="Config file path (default: config.yml)")
     parser.add_argument("-p", "--path", help="Save path")
     parser.add_argument("-t", "--thread", type=int, help="Thread count")

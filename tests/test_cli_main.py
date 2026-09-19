@@ -12,8 +12,9 @@ class _FakeCookieManager:
 
 
 class _FakeAPIClient:
-    def __init__(self, _cookies, proxy=None):
+    def __init__(self, _cookies, proxy=None, page_bridge=None):
         self.proxy = proxy
+        self.page_bridge = page_bridge
         self.resolved_urls = []
 
     async def __aenter__(self):
@@ -74,10 +75,10 @@ async def test_download_url_passes_proxy_to_api_client(monkeypatch, tmp_path):
     captured = {}
 
     class _ProxyAPIClient(_FakeAPIClient):
-        def __init__(self, cookies, proxy=None):
+        def __init__(self, cookies, proxy=None, page_bridge=None):
             captured["cookies"] = cookies
             captured["proxy"] = proxy
-            super().__init__(cookies, proxy=proxy)
+            super().__init__(cookies, proxy=proxy, page_bridge=page_bridge)
 
     monkeypatch.setattr(main_module, "DouyinAPIClient", _ProxyAPIClient)
     monkeypatch.setattr(
@@ -168,3 +169,18 @@ async def test_download_url_gates_lvdetail_before_building_a_downloader(monkeypa
     assert result is None
     assert created == []
     assert errors == [main_module.UNSUPPORTED_URL_TYPE_DETAIL["lvdetail"]]
+
+
+def test_read_list_file_extracts_short_urls_in_order(tmp_path):
+    source = tmp_path / "list.txt"
+    source.write_text(
+        "说明 https://v.douyin.com/first_ID/ 复制链接\n"
+        "重复 https://v.douyin.com/first_ID/\n"
+        "第二条 https://v.iesdouyin.com/second-2 结束\n",
+        encoding="utf-8",
+    )
+
+    assert main_module._read_list_file(str(source)) == [
+        "https://v.douyin.com/first_ID/",
+        "https://v.iesdouyin.com/second-2",
+    ]
