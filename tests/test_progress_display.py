@@ -149,6 +149,24 @@ def test_show_item_reasons_prints_nothing_without_reasons(monkeypatch):
     assert printed == []
 
 
+def test_show_failed_urls_lists_source_urls_once(monkeypatch):
+    display = ProgressDisplay()
+    printed = []
+    monkeypatch.setattr(display, "print_error", printed.append)
+
+    display.start_url(1, 2, "https://v.douyin.com/failed-1/")
+    display.complete_url(SimpleNamespace(success=0, failed=2, skipped=0))
+    display.start_url(2, 2, "https://v.douyin.com/failed-2/")
+    display.fail_url("链接无效")
+    display.show_failed_urls()
+
+    assert printed == [
+        "失败链接：\n"
+        "https://v.douyin.com/failed-1/\n"
+        "https://v.douyin.com/failed-2/"
+    ]
+
+
 def test_rollback_url_item_reasons_drops_counts_from_aborted_attempt(monkeypatch):
     """CLI 重新登录后会整条 URL 重跑；上一轮已结算的原因不能再算一遍。"""
     display = ProgressDisplay()

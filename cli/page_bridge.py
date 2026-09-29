@@ -6,6 +6,15 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional
 from urllib.parse import unquote, urlencode
 
+from utils.logger import safe_log_url, setup_logger
+
+logger = setup_logger("PlaywrightPageBridge")
+
+_MOBILE_USER_AGENT = (
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) "
+    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1"
+)
+
 
 @dataclass
 class PageBridgeResult:
@@ -139,9 +148,16 @@ class PlaywrightPageBridge:
         page = await self._context.new_page()
         captured = asyncio.get_running_loop().create_future()
         pending = []
+        detail_statuses = []
+        scripts = []
 
         async def capture(response) -> None:
             if "/aweme/v1/web/aweme/detail/" not in (response.url or ""):
+                return
+            detail_statuses.append(response.status)
+            if response.status != 200:
+                if not captured.done():
+                    captured.set_result(None)
                 return
             try:
                 body = await response.json()
@@ -161,10 +177,27 @@ class PlaywrightPageBridge:
                 timeout=self.timeout_ms,
             )
             try:
-                body = await asyncio.wait_for(asyncio.shield(captured), timeout=5)
+                body = await asyncio.wait_for(
+                    asyncio.shield(captured),
+                    timeout=min(30, self.timeout_ms / 1000),
+                )
             except asyncio.TimeoutError:
                 scripts = await page.locator("script").all_text_contents()
                 body = self._detail_from_scripts(scripts, aweme_id)
+            if body:
+                text = json.dumps(body, ensure_ascii=False)
+                return PageBridgeResult(200, body, text)
+            title = await page.title()
+            logger.warning(
+                "Douyin item page contained no detail: aweme_id=%s final_url=%s title=%r "
+                "script_count=%d detail_statuses=%s",
+                aweme_id,
+                safe_log_url(page.url),
+                title[:120],
+                len(scripts),
+                detail_statuses or "-",
+            )
+            body = await self._fetch_aweme_detail_share_page(aweme_id)
             if body:
                 text = json.dumps(body, ensure_ascii=False)
                 return PageBridgeResult(200, body, text)
@@ -176,18 +209,68 @@ class PlaywrightPageBridge:
                 await asyncio.gather(*pending, return_exceptions=True)
             await page.close()
 
+    async def _fetch_aweme_detail_share_page(
+        self, aweme_id: str
+    ) -> Optional[Dict[str, Any]]:
+        context = await self._browser.new_context(user_agent=_MOBILE_USER_AGENT, locale="zh-CN")
+        page = await context.new_page()
+        try:
+            for kind in ("video", "slides", "note"):
+                await page.goto(
+                    "https://www.iesdouyin.com/share/{}/{}/".format(kind, aweme_id),
+                    wait_until="domcontentloaded",
+                    timeout=self.timeout_ms,
+                )
+                data = await page.evaluate("() => window._ROUTER_DATA || null")
+                item = self._find_aweme(data, aweme_id)
+                if item is None:
+                    scripts = await page.locator("script").all_text_contents()
+                    result = self._detail_from_scripts(scripts, aweme_id)
+                else:
+                    result = {"status_code": 0, "aweme_detail": item}
+                if result:
+                    logger.info(
+                        "Douyin item detail recovered from mobile share page: aweme_id=%s kind=%s",
+                        aweme_id,
+                        kind,
+                    )
+                    return result
+            logger.warning(
+                "Douyin mobile share pages contained no detail: aweme_id=%s final_url=%s",
+                aweme_id,
+                safe_log_url(page.url),
+            )
+            return None
+        finally:
+            await context.close()
+
     @classmethod
     def _detail_from_scripts(cls, scripts, aweme_id: str) -> Optional[Dict[str, Any]]:
         for text in scripts:
             for candidate in (text, unquote(text)):
-                try:
-                    data = json.loads(candidate)
-                except (TypeError, ValueError):
-                    continue
-                item = cls._find_aweme(data, aweme_id)
-                if item is not None:
-                    return {"status_code": 0, "aweme_detail": item}
+                for data in cls._json_candidates(candidate):
+                    item = cls._find_aweme(data, aweme_id)
+                    if item is not None:
+                        return {"status_code": 0, "aweme_detail": item}
         return None
+
+    @staticmethod
+    def _json_candidates(text):
+        try:
+            yield json.loads(text)
+        except (TypeError, ValueError):
+            pass
+        if not isinstance(text, str) or "_ROUTER_DATA" not in text:
+            return
+        marker = text.find("_ROUTER_DATA")
+        start = text.find("{", marker)
+        if start < 0:
+            return
+        try:
+            data, _ = json.JSONDecoder().raw_decode(text[start:])
+        except ValueError:
+            return
+        yield data
 
     @classmethod
     def _find_aweme(cls, value: Any, aweme_id: str) -> Optional[Dict[str, Any]]:

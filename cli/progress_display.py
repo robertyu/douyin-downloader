@@ -39,6 +39,8 @@ class ProgressDisplay:
         # 结束后只能靠 show_item_reasons 把原因留在屏幕上。
         self._reason_counts: Dict[Tuple[str, str], int] = {}
         self._reason_counts_at_url_start: Dict[Tuple[str, str], int] = {}
+        self._current_url = ""
+        self._failed_urls = []
 
     def show_banner(self):
         banner = """
@@ -66,6 +68,7 @@ class ProgressDisplay:
         if self._progress is not None:
             return
 
+        self._failed_urls = []
         self._progress_ctx = self.create_progress()
         self._progress = self._progress_ctx.__enter__()
         self._single_url_item_mode = False
@@ -88,6 +91,7 @@ class ProgressDisplay:
         self._single_url_item_mode = False
 
     def start_url(self, index: int, total: int, url: str):
+        self._current_url = url
         self._url_index = index
         self._url_total = total
         self._url_step_completed = 0
@@ -108,6 +112,8 @@ class ProgressDisplay:
         )
 
     def complete_url(self, result=None):
+        if result and result.failed and self._current_url not in self._failed_urls:
+            self._failed_urls.append(self._current_url)
         if self._progress and self._url_task_id is not None:
             detail = ""
             if result:
@@ -126,6 +132,8 @@ class ProgressDisplay:
                 self._progress.advance(self._overall_task_id, 1)
 
     def fail_url(self, reason: str):
+        if self._current_url and self._current_url not in self._failed_urls:
+            self._failed_urls.append(self._current_url)
         if self._progress and self._url_task_id is not None:
             self._progress.update(
                 self._url_task_id,
@@ -264,6 +272,11 @@ class ProgressDisplay:
         for (status, reason), count in ranked:
             table.add_row(_REASON_STATUS_LABELS[status], reason, str(count))
         self._active_console().print(table)
+
+    def show_failed_urls(self):
+        if not self._failed_urls:
+            return
+        self.print_error("失败链接：\n" + "\n".join(self._failed_urls))
 
     def print_info(self, message: str):
         self._active_console().print(f"[blue]ℹ[/blue] {message}")

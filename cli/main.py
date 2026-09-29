@@ -358,9 +358,11 @@ async def main_async(args):
         display.print_success("\n=== Overall Summary ===")
         display.show_result(total_result)
         display.show_item_reasons()
+        display.show_failed_urls()
 
         await _dispatch_notifications(config, total_result, len(urls))
     else:
+        display.show_failed_urls()
         # 所有链接都失败时，也发通知（若启用）
         await _dispatch_notifications(config, None, len(urls))
 
